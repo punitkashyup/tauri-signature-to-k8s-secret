@@ -327,17 +327,20 @@ class TauriSignatureExtractor {
   prepareSecretData() {
     const data = {};
     
+    // Add metadata
     const metadata = {
       platforms: Object.keys(this.signatures),
       totalSignatures: this.signatureCount,
       extractedAt: new Date().toISOString(),
       githubRef: process.env.GITHUB_REF || 'unknown',
       githubSha: process.env.GITHUB_SHA || 'unknown',
-      bundlePath: this.bundlePath
+      bundlePath: this.bundlePath,
+      keyPrefix: this.keyPrefix
     };
     
     data[`${this.keyPrefix}-metadata`] = Buffer.from(JSON.stringify(metadata)).toString('base64');
     
+    // Add signature data for each platform
     for (const [platform, platformSigs] of Object.entries(this.signatures)) {
       for (const [key, sigData] of Object.entries(platformSigs)) {
         const secretKey = `${this.keyPrefix}-${platform}-${key}`.replace(/[^a-zA-Z0-9._-]/g, '-');
@@ -350,7 +353,52 @@ class TauriSignatureExtractor {
       }
     }
     
+    // Set the main signature key based on the prefix and platform
+    // This allows the action to work for any platform by using the prefix as the env var name
+    const mainSignature = this.findMainSignature();
+    if (mainSignature) {
+      data[this.keyPrefix] = Buffer.from(mainSignature.content).toString('base64');
+      core.info(`✅ Set ${this.keyPrefix} for legacy compatibility`);
+    } else {
+      core.warning(`⚠️ No main signature found for ${this.keyPrefix}`);
+    }
+    
     return data;
+  }
+
+  findMainSignature() {
+    // Find the main signature file based on platform and file patterns
+    for (const [platform, platformSigs] of Object.entries(this.signatures)) {
+      for (const [key, sigData] of Object.entries(platformSigs)) {
+        if (platform === 'windows') {
+          // For Windows, prefer MSI signature that's not a zip
+          if (sigData.file && sigData.file.includes('.msi.sig') && !sigData.file.includes('.zip.sig')) {
+            return sigData;
+          }
+        } else if (platform === 'macos') {
+          // For macOS, prefer DMG signature or the first available
+          if (sigData.file && (sigData.file.includes('.dmg.sig') || sigData.file.includes('.app.tar.gz.sig'))) {
+            return sigData;
+          }
+        } else if (platform === 'linux') {
+          // For Linux, prefer DEB signature or the first available
+          if (sigData.file && sigData.file.includes('.deb.sig')) {
+            return sigData;
+          }
+        }
+      }
+    }
+    
+    // Fallback: return the first signature found
+    for (const [platform, platformSigs] of Object.entries(this.signatures)) {
+      const firstSig = Object.values(platformSigs)[0];
+      if (firstSig) {
+        core.info(`📝 Using fallback signature: ${firstSig.file}`);
+        return firstSig;
+      }
+    }
+    
+    return null;
   }
 
   async createSecret(secretData) {
