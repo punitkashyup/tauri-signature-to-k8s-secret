@@ -55,22 +55,22 @@ class TauriSignatureExtractor {
       await this.extractSignatures();
       
       if (this.signatureCount === 0) {
-        core.warning('⚠️ No signature files found. Skipping Kubernetes secret creation.');
+        core.warning('⚠️ No signature files found. Skipping Kubernetes secret update.');
         core.setOutput('signatures-found', '0');
         core.setOutput('secret-updated', 'false');
         core.setOutput('signature-hashes', '{}');
         return;
       }
       
-      // Update Kubernetes secret
-      await this.updateKubernetesSecret();
+      // Update only the signature key in the secret
+      await this.updateSignatureInSecret();
       
       // Set outputs
       core.setOutput('signatures-found', this.signatureCount.toString());
       core.setOutput('secret-updated', 'true');
       core.setOutput('signature-hashes', JSON.stringify(this.signatures));
       
-      core.info('✅ Tauri signatures successfully stored in Kubernetes secret!');
+      core.info('✅ Tauri signature successfully updated in Kubernetes secret!');
       
     } catch (error) {
       core.error(`❌ Action failed: ${error.message}`);
@@ -134,10 +134,10 @@ class TauriSignatureExtractor {
     
     // Test kubectl connection
     try {
-      execSync('kubectl version --client', { stdio: 'pipe' });
-      core.info('✅ kubectl configured successfully');
+      const clientVersion = execSync('kubectl version --client --short', { encoding: 'utf8', stdio: 'pipe' });
+      core.info(`✅ kubectl client: ${clientVersion.trim()}`);
     } catch (error) {
-      core.error(`kubectl test failed: ${error.message}`);
+      core.error(`kubectl setup failed: ${error.message}`);
       throw new Error(`Failed to configure kubectl: ${error.message}`);
     }
   }
@@ -155,30 +155,6 @@ class TauriSignatureExtractor {
     
     if (!fs.existsSync(absoluteBundlePath)) {
       core.error(`❌ Bundle path does not exist: ${absoluteBundlePath}`);
-      
-      // Debug information
-      try {
-        const currentDir = process.cwd();
-        core.info(`📂 Contents of current directory (${currentDir}):`);
-        const files = fs.readdirSync(currentDir);
-        files.slice(0, 10).forEach(file => {
-          const fullPath = path.join(currentDir, file);
-          const isDir = fs.lstatSync(fullPath).isDirectory();
-          core.info(`  ${isDir ? '📁' : '📄'} ${file}`);
-        });
-        
-        // Look for tauri directories
-        const tauriDirs = files.filter(file => 
-          file.includes('tauri') || file.includes('target') || file.includes('apps')
-        );
-        if (tauriDirs.length > 0) {
-          core.info('🔍 Found potential Tauri directories:');
-          tauriDirs.forEach(dir => core.info(`  📁 ${dir}`));
-        }
-      } catch (debugError) {
-        core.warning(`Debug listing failed: ${debugError.message}`);
-      }
-      
       throw new Error(`Bundle directory not found: ${absoluteBundlePath}`);
     }
     
@@ -201,31 +177,6 @@ class TauriSignatureExtractor {
     }
     
     core.info(`📊 Total: ${this.signatureCount} signature files across ${Object.keys(this.signatures).length} platforms`);
-    
-    if (this.signatureCount === 0) {
-      core.info('🔍 Searching for .sig files recursively...');
-      this.findAllSigFiles(this.bundlePath);
-    }
-  }
-
-  findAllSigFiles(dir, maxDepth = 3) {
-    if (maxDepth <= 0) return;
-    
-    try {
-      const items = fs.readdirSync(dir);
-      for (const item of items) {
-        const fullPath = path.join(dir, item);
-        const stat = fs.lstatSync(fullPath);
-        
-        if (stat.isFile() && item.endsWith('.sig')) {
-          core.info(`📝 Found .sig file: ${fullPath}`);
-        } else if (stat.isDirectory()) {
-          this.findAllSigFiles(fullPath, maxDepth - 1);
-        }
-      }
-    } catch (e) {
-      core.debug(`Cannot read directory ${dir}: ${e.message}`);
-    }
   }
 
   async extractPlatformSignatures(platform) {
@@ -296,22 +247,46 @@ class TauriSignatureExtractor {
     return signatures;
   }
 
-  async updateKubernetesSecret() {
-    core.info('🔐 Updating Kubernetes secret...');
+  async updateSignatureInSecret() {
+    core.info('🔐 Updating signature in Kubernetes secret...');
+    
+    // Check if secret exists
+    const secretExists = await this.checkSecretExists();
+    if (!secretExists) {
+      throw new Error(`Secret ${this.secretName} does not exist. Please create it first with your application environment variables.`);
+    }
+    
+    // Find the main signature
+    const mainSignature = this.findMainSignature();
+    if (!mainSignature) {
+      throw new Error('No suitable signature found to update');
+    }
+    
+    core.info(`📝 Updating ${this.keyPrefix} with signature from ${mainSignature.file}`);
+    
+    // Create patch data with just the signature key
+    const signatureValue = Buffer.from(mainSignature.content).toString('base64');
+    const patchData = {
+      data: {
+        [this.keyPrefix]: signatureValue
+      }
+    };
     
     try {
-      const secretExists = await this.checkSecretExists();
-      const secretData = this.prepareSecretData();
+      // Use kubectl patch with merge strategy via stdin
+      const patchJson = JSON.stringify(patchData, null, 2);
+      core.info(`📄 Patch content: ${patchJson}`);
       
-      if (secretExists) {
-        await this.patchSecret(secretData);
-      } else {
-        await this.createSecret(secretData);
-      }
+      execSync(`kubectl patch secret "${this.secretName}" -n "${this.namespace}" --type merge --patch-file -`, {
+        input: patchJson,
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
       
-      core.info('✅ Kubernetes secret updated successfully');
+      core.info(`✅ Successfully updated ${this.keyPrefix} in secret ${this.secretName}`);
+      
     } catch (error) {
-      throw new Error(`Failed to update Kubernetes secret: ${error.message}`);
+      throw new Error(`Failed to patch secret: ${error.message}`);
     }
   }
 
@@ -322,22 +297,6 @@ class TauriSignatureExtractor {
     } catch (error) {
       return false;
     }
-  }
-
-  prepareSecretData() {
-    const data = {};
-    
-    // Only set the main signature key based on the prefix
-    // No detailed metadata or individual signature files
-    const mainSignature = this.findMainSignature();
-    if (mainSignature) {
-      data[this.keyPrefix] = Buffer.from(mainSignature.content).toString('base64');
-      core.info(`✅ Set ${this.keyPrefix} with signature content`);
-    } else {
-      core.warning(`⚠️ No main signature found for ${this.keyPrefix}`);
-    }
-    
-    return data;
   }
 
   findMainSignature() {
@@ -373,112 +332,6 @@ class TauriSignatureExtractor {
     }
     
     return null;
-  }
-
-  async createSecret(secretData) {
-    core.info('📝 Creating new Kubernetes secret');
-    
-    // For large data, use kubectl apply with YAML instead of --from-literal
-    const secretManifest = {
-      apiVersion: 'v1',
-      kind: 'Secret',
-      metadata: {
-        name: this.secretName,
-        namespace: this.namespace,
-        labels: {
-          'app.kubernetes.io/name': 'tauri-signatures',
-          'app.kubernetes.io/created-by': 'github-action'
-        }
-      },
-      type: 'Opaque',
-      data: secretData
-    };
-    
-    const yamlContent = this.objectToYaml(secretManifest);
-    
-    try {
-      // Use kubectl apply with stdin to avoid command line length limits
-      execSync('kubectl apply -f -', { 
-        input: yamlContent,
-        encoding: 'utf8',
-        stdio: ['pipe', 'pipe', 'pipe']
-      });
-      core.info('✅ Created new Kubernetes secret');
-    } catch (e) {
-      core.error(`kubectl apply failed: ${e.message}`);
-      // Fallback: try creating with individual patches
-      await this.createSecretWithPatches(secretData);
-    }
-  }
-
-  async createSecretWithPatches(secretData) {
-    core.info('📝 Creating secret with individual patches (fallback method)');
-    
-    try {
-      // Create empty secret first
-      execSync(`kubectl create secret generic "${this.secretName}" -n "${this.namespace}"`, { stdio: 'pipe' });
-      core.info('✅ Created empty secret');
-      
-      // Add data in smaller chunks
-      const entries = Object.entries(secretData);
-      const chunkSize = 5; // Process 5 entries at a time
-      
-      for (let i = 0; i < entries.length; i += chunkSize) {
-        const chunk = entries.slice(i, i + chunkSize);
-        const patchData = { data: Object.fromEntries(chunk) };
-        
-        execSync(`kubectl patch secret "${this.secretName}" -n "${this.namespace}" --type merge --patch '${JSON.stringify(patchData)}'`, {
-          stdio: 'pipe'
-        });
-        
-        core.info(`✅ Added chunk ${Math.floor(i/chunkSize) + 1}/${Math.ceil(entries.length/chunkSize)}`);
-      }
-      
-    } catch (e) {
-      throw new Error(`Failed to create secret with patches: ${e.message}`);
-    }
-  }
-
-  async patchSecret(secretData) {
-    core.info('🔄 Updating existing Kubernetes secret');
-    
-    // Delete and recreate for simplicity
-    try {
-      execSync(`kubectl delete secret "${this.secretName}" -n "${this.namespace}"`, { stdio: 'pipe' });
-      core.info('🗑️ Deleted existing secret');
-    } catch (e) {
-      core.warning(`Could not delete existing secret: ${e.message}`);
-    }
-    
-    // Create new secret
-    await this.createSecret(secretData);
-  }
-
-  // Simple YAML generator for the secret manifest
-  objectToYaml(obj) {
-    let yaml = `apiVersion: ${obj.apiVersion}\n`;
-    yaml += `kind: ${obj.kind}\n`;
-    yaml += `metadata:\n`;
-    yaml += `  name: ${obj.metadata.name}\n`;
-    yaml += `  namespace: ${obj.metadata.namespace}\n`;
-    
-    if (obj.metadata.labels) {
-      yaml += `  labels:\n`;
-      for (const [key, value] of Object.entries(obj.metadata.labels)) {
-        yaml += `    ${key}: ${value}\n`;
-      }
-    }
-    
-    yaml += `type: ${obj.type}\n`;
-    
-    if (obj.data) {
-      yaml += `data:\n`;
-      for (const [key, value] of Object.entries(obj.data)) {
-        yaml += `  ${key}: ${value}\n`;
-      }
-    }
-    
-    return yaml;
   }
 }
 
