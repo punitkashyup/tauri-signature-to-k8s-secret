@@ -1,9 +1,6 @@
 name: 'Tauri Signature to Kubernetes Secret'
 description: 'Extract Tauri build signatures and store them in Kubernetes secrets'
-author: 'YourName'
-branding:
-  icon: 'lock'
-  color: 'blue'
+author: 'Punit Kashyup'
 
 inputs:
   tauri-bundle-path:
@@ -30,22 +27,9 @@ inputs:
     default: 'tauri-sig'
   
   platforms:
-    description: 'Comma-separated list of platforms to process (windows,macos,linux)'
+    description: 'Comma-separated list of platforms to process'
     required: false
     default: 'windows,macos,linux'
-  
-  github-token:
-    description: 'GitHub token for authentication'
-    required: false
-    default: ${{ github.token }}
-
-outputs:
-  signatures-found:
-    description: 'Number of signature files found'
-  secret-updated:
-    description: 'Whether the Kubernetes secret was updated'
-  signature-hashes:
-    description: 'JSON object containing signature hashes by platform'
 
 runs:
   using: 'node20'
