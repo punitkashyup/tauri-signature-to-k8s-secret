@@ -82,22 +82,51 @@ class TauriSignatureExtractor {
   async setupKubectl() {
     core.info('🔧 Setting up kubectl...');
     
+    // Get home directory - handle both Windows and Unix
+    const homeDir = process.env.HOME || process.env.USERPROFILE || process.env.HOMEPATH;
+    if (!homeDir) {
+      throw new Error('Cannot determine home directory. HOME, USERPROFILE, and HOMEPATH are all undefined.');
+    }
+    
+    core.debug(`Home directory: ${homeDir}`);
+    
     // Write kubeconfig to file
-    const kubeconfigPath = path.join(process.env.HOME, '.kube', 'config');
+    const kubeconfigPath = path.join(homeDir, '.kube', 'config');
     const kubeconfigDir = path.dirname(kubeconfigPath);
     
+    core.debug(`Kubeconfig path: ${kubeconfigPath}`);
+    core.debug(`Kubeconfig directory: ${kubeconfigDir}`);
+    
     if (!fs.existsSync(kubeconfigDir)) {
+      core.debug('Creating .kube directory...');
       fs.mkdirSync(kubeconfigDir, { recursive: true });
     }
     
+    // Validate kubeconfig content
+    if (!this.kubeConfig || typeof this.kubeConfig !== 'string') {
+      throw new Error('kubernetes-config input is empty or invalid');
+    }
+    
+    if (this.kubeConfig.trim().length === 0) {
+      throw new Error('kubernetes-config input is empty');
+    }
+    
     // Write the kubeconfig directly (no base64 decoding needed)
+    core.debug('Writing kubeconfig file...');
     fs.writeFileSync(kubeconfigPath, this.kubeConfig);
+    
+    // Set file permissions (Unix-like systems)
+    if (process.platform !== 'win32') {
+      fs.chmodSync(kubeconfigPath, 0o600);
+    }
     
     // Test kubectl connection
     try {
+      core.debug('Testing kubectl connection...');
       execSync('kubectl version --client', { stdio: 'pipe' });
       core.info('✅ kubectl configured successfully');
     } catch (error) {
+      core.error(`kubectl test failed: ${error.message}`);
       throw new Error(`Failed to configure kubectl: ${error.message}`);
     }
   }
