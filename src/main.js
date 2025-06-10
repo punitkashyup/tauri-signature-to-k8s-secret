@@ -29,23 +29,52 @@ class TauriSignatureExtractor {
     try {
       core.info('🔍 Starting Tauri signature extraction...');
       
+      // Validate inputs
+      if (!this.bundlePath) {
+        throw new Error('tauri-bundle-path input is required');
+      }
+      
+      if (!this.kubeConfig) {
+        throw new Error('kubernetes-config input is required');
+      }
+      
+      if (!this.secretName) {
+        throw new Error('secret-name input is required');
+      }
+      
+      core.info(`🎯 Target secret: ${this.secretName} in namespace: ${this.namespace}`);
+      core.info(`🏷️ Key prefix: ${this.keyPrefix}`);
+      core.info(`🖥️ Platforms: ${this.platforms.join(', ')}`);
+      
       // Setup kubectl
       await this.setupKubectl();
       
       // Find and extract signatures
       await this.extractSignatures();
       
+      if (this.signatureCount === 0) {
+        core.warning('⚠️ No signature files found. Skipping Kubernetes secret creation.');
+        core.setOutput('signatures-found', '0');
+        core.setOutput('secret-updated', 'false');
+        core.setOutput('signature-hashes', '{}');
+        return;
+      }
+      
       // Update Kubernetes secret
       await this.updateKubernetesSecret();
       
       // Set outputs
-      core.setOutput('signatures-found', this.signatureCount);
+      core.setOutput('signatures-found', this.signatureCount.toString());
       core.setOutput('secret-updated', 'true');
       core.setOutput('signature-hashes', JSON.stringify(this.signatures));
       
       core.info('✅ Tauri signatures successfully stored in Kubernetes secret!');
       
     } catch (error) {
+      core.error(`❌ Action failed: ${error.message}`);
+      if (error.stack) {
+        core.debug(`Stack trace: ${error.stack}`);
+      }
       core.setFailed(`Action failed: ${error.message}`);
     }
   }
@@ -76,19 +105,120 @@ class TauriSignatureExtractor {
   async extractSignatures() {
     core.info('📂 Extracting Tauri signatures...');
     
+    // Validate bundle path
+    if (!this.bundlePath || typeof this.bundlePath !== 'string') {
+      throw new Error(`Invalid bundle path: ${this.bundlePath}`);
+    }
+    
+    const absoluteBundlePath = path.resolve(this.bundlePath);
+    core.info(`🔍 Bundle path: ${absoluteBundlePath}`);
+    core.info(`📍 Current working directory: ${process.cwd()}`);
+    
+    if (!fs.existsSync(absoluteBundlePath)) {
+      core.error(`❌ Bundle path does not exist: ${absoluteBundlePath}`);
+      
+      // Try to find Tauri directories for debugging
+      try {
+        const currentDir = process.cwd();
+        core.info(`📂 Contents of current directory (${currentDir}):`);
+        const files = fs.readdirSync(currentDir);
+        files.slice(0, 10).forEach(file => {
+          const fullPath = path.join(currentDir, file);
+          const isDir = fs.statSync(fullPath).isDirectory();
+          core.info(`  ${isDir ? '📁' : '📄'} ${file}`);
+        });
+        
+        // Look for any tauri-related directories
+        const findTauriDirs = (dir, maxDepth = 2) => {
+          if (maxDepth <= 0) return [];
+          try {
+            const items = fs.readdirSync(dir);
+            let tauriDirs = [];
+            for (const item of items) {
+              if (item.includes('tauri') || item.includes('target')) {
+                const fullPath = path.join(dir, item);
+                if (fs.statSync(fullPath).isDirectory()) {
+                  tauriDirs.push(fullPath);
+                  // Look one level deeper
+                  tauriDirs = tauriDirs.concat(findTauriDirs(fullPath, maxDepth - 1));
+                }
+              }
+            }
+            return tauriDirs;
+          } catch (e) {
+            return [];
+          }
+        };
+        
+        const tauriDirs = findTauriDirs(currentDir);
+        if (tauriDirs.length > 0) {
+          core.info('🔍 Found Tauri-related directories:');
+          tauriDirs.slice(0, 5).forEach(dir => core.info(`  📁 ${dir}`));
+        }
+        
+      } catch (debugError) {
+        core.warning(`Debug directory listing failed: ${debugError.message}`);
+      }
+      
+      throw new Error(`Bundle directory not found: ${absoluteBundlePath}`);
+    }
+    
+    // Update bundle path to absolute path
+    this.bundlePath = absoluteBundlePath;
+    
     for (const platform of this.platforms) {
       if (!PLATFORM_PATHS[platform]) {
         core.warning(`⚠️ Unknown platform: ${platform}`);
         continue;
       }
       
+      core.info(`🔍 Processing platform: ${platform}`);
       const platformSignatures = await this.extractPlatformSignatures(platform);
       if (Object.keys(platformSignatures).length > 0) {
         this.signatures[platform] = platformSignatures;
+        core.info(`✅ Found ${Object.keys(platformSignatures).length} signatures for ${platform}`);
+      } else {
+        core.info(`ℹ️ No signatures found for ${platform}`);
       }
     }
     
     core.info(`📊 Found ${this.signatureCount} signature files across ${Object.keys(this.signatures).length} platforms`);
+    
+    if (this.signatureCount === 0) {
+      // Try to find .sig files anywhere in the bundle path
+      core.info('🔍 Searching for .sig files recursively...');
+      try {
+        const findSigFiles = (dir, maxDepth = 3) => {
+          if (maxDepth <= 0) return [];
+          try {
+            const items = fs.readdirSync(dir);
+            let sigFiles = [];
+            for (const item of items) {
+              const fullPath = path.join(dir, item);
+              const stat = fs.statSync(fullPath);
+              if (stat.isFile() && item.endsWith('.sig')) {
+                sigFiles.push(fullPath);
+              } else if (stat.isDirectory()) {
+                sigFiles = sigFiles.concat(findSigFiles(fullPath, maxDepth - 1));
+              }
+            }
+            return sigFiles;
+          } catch (e) {
+            return [];
+          }
+        };
+        
+        const allSigFiles = findSigFiles(this.bundlePath);
+        if (allSigFiles.length > 0) {
+          core.info('📝 Found .sig files at:');
+          allSigFiles.slice(0, 10).forEach(file => core.info(`  📄 ${file}`));
+        } else {
+          core.info('ℹ️ No .sig files found in bundle directory');
+        }
+      } catch (searchError) {
+        core.warning(`Error searching for .sig files: ${searchError.message}`);
+      }
+    }
   }
 
   async extractPlatformSignatures(platform) {
@@ -97,32 +227,68 @@ class TauriSignatureExtractor {
     for (const bundleType of PLATFORM_PATHS[platform]) {
       const bundleDir = path.join(this.bundlePath, bundleType);
       
+      core.debug(`Checking bundle directory: ${bundleDir}`);
+      
       if (!fs.existsSync(bundleDir)) {
-        core.debug(`📁 Bundle directory not found: ${bundleDir}`);
+        core.debug(`Bundle directory not found: ${bundleDir}`);
         continue;
       }
       
       try {
         const files = fs.readdirSync(bundleDir);
+        core.debug(`Files in ${bundleDir}: ${files.join(', ')}`);
+        
         const sigFiles = files.filter(file => file.endsWith('.sig'));
+        core.debug(`Signature files found: ${sigFiles.join(', ')}`);
         
         for (const sigFile of sigFiles) {
           const sigPath = path.join(bundleDir, sigFile);
-          const sigContent = fs.readFileSync(sigPath, 'utf8').trim();
           
-          // Generate a hash of the signature for verification
-          const sigHash = crypto.createHash('sha256').update(sigContent).digest('hex');
+          // Validate file path
+          if (!sigPath || typeof sigPath !== 'string') {
+            core.warning(`Invalid signature file path: ${sigPath}`);
+            continue;
+          }
           
-          const key = `${bundleType}-${path.basename(sigFile, '.sig')}`;
-          signatures[key] = {
-            content: sigContent,
-            hash: sigHash,
-            file: sigFile,
-            timestamp: new Date().toISOString()
-          };
+          if (!fs.existsSync(sigPath)) {
+            core.warning(`Signature file does not exist: ${sigPath}`);
+            continue;
+          }
           
-          this.signatureCount++;
-          core.info(`✅ Extracted signature: ${platform}/${key}`);
+          try {
+            const sigContent = fs.readFileSync(sigPath, 'utf8').trim();
+            
+            if (!sigContent) {
+              core.warning(`Empty signature file: ${sigPath}`);
+              continue;
+            }
+            
+            // Generate a hash of the signature for verification
+            const sigHash = crypto.createHash('sha256').update(sigContent).digest('hex');
+            
+            // Sanitize filename for use as key
+            const filename = path.basename(sigFile, '.sig').replace(/[^a-zA-Z0-9._-]/g, '_');
+            
+            if (!filename) {
+              core.warning(`Invalid filename after sanitization: ${sigFile}`);
+              continue;
+            }
+            
+            const key = `${bundleType}-${filename}`;
+            signatures[key] = {
+              content: sigContent,
+              hash: sigHash,
+              file: sigFile,
+              timestamp: new Date().toISOString(),
+              path: sigPath
+            };
+            
+            this.signatureCount++;
+            core.info(`✅ Extracted signature: ${platform}/${key}`);
+            
+          } catch (fileError) {
+            core.warning(`Error reading signature file ${sigPath}: ${fileError.message}`);
+          }
         }
       } catch (error) {
         core.warning(`⚠️ Error processing ${platform}/${bundleType}: ${error.message}`);
@@ -168,19 +334,33 @@ class TauriSignatureExtractor {
     const data = {};
     
     // Add metadata
-    data[`${this.keyPrefix}-metadata`] = Buffer.from(JSON.stringify({
+    const metadata = {
       platforms: Object.keys(this.signatures),
       totalSignatures: this.signatureCount,
       extractedAt: new Date().toISOString(),
-      githubRef: process.env.GITHUB_REF,
-      githubSha: process.env.GITHUB_SHA
-    })).toString('base64');
+      githubRef: process.env.GITHUB_REF || 'unknown',
+      githubSha: process.env.GITHUB_SHA || 'unknown',
+      bundlePath: this.bundlePath
+    };
+    
+    data[`${this.keyPrefix}-metadata`] = Buffer.from(JSON.stringify(metadata)).toString('base64');
     
     // Add signature data
     for (const [platform, platformSigs] of Object.entries(this.signatures)) {
       for (const [key, sigData] of Object.entries(platformSigs)) {
         const secretKey = `${this.keyPrefix}-${platform}-${key}`;
-        data[secretKey] = Buffer.from(JSON.stringify(sigData)).toString('base64');
+        
+        // Validate the key doesn't contain invalid characters
+        const validKey = secretKey.replace(/[^a-zA-Z0-9._-]/g, '-');
+        if (validKey !== secretKey) {
+          core.warning(`Secret key sanitized: ${secretKey} -> ${validKey}`);
+        }
+        
+        try {
+          data[validKey] = Buffer.from(JSON.stringify(sigData)).toString('base64');
+        } catch (encodeError) {
+          core.error(`Failed to encode signature data for key ${validKey}: ${encodeError.message}`);
+        }
       }
     }
     
