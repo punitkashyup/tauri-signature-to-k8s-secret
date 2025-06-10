@@ -25975,38 +25975,12 @@ class TauriSignatureExtractor {
   prepareSecretData() {
     const data = {};
     
-    // Add metadata
-    const metadata = {
-      platforms: Object.keys(this.signatures),
-      totalSignatures: this.signatureCount,
-      extractedAt: new Date().toISOString(),
-      githubRef: process.env.GITHUB_REF || 'unknown',
-      githubSha: process.env.GITHUB_SHA || 'unknown',
-      bundlePath: this.bundlePath,
-      keyPrefix: this.keyPrefix
-    };
-    
-    data[`${this.keyPrefix}-metadata`] = Buffer.from(JSON.stringify(metadata)).toString('base64');
-    
-    // Add signature data for each platform
-    for (const [platform, platformSigs] of Object.entries(this.signatures)) {
-      for (const [key, sigData] of Object.entries(platformSigs)) {
-        const secretKey = `${this.keyPrefix}-${platform}-${key}`.replace(/[^a-zA-Z0-9._-]/g, '-');
-        
-        try {
-          data[secretKey] = Buffer.from(JSON.stringify(sigData)).toString('base64');
-        } catch (encodeError) {
-          core.error(`Failed to encode signature data for key ${secretKey}: ${encodeError.message}`);
-        }
-      }
-    }
-    
-    // Set the main signature key based on the prefix and platform
-    // This allows the action to work for any platform by using the prefix as the env var name
+    // Only set the main signature key based on the prefix
+    // No detailed metadata or individual signature files
     const mainSignature = this.findMainSignature();
     if (mainSignature) {
       data[this.keyPrefix] = Buffer.from(mainSignature.content).toString('base64');
-      core.info(`✅ Set ${this.keyPrefix} for legacy compatibility`);
+      core.info(`✅ Set ${this.keyPrefix} with signature content`);
     } else {
       core.warning(`⚠️ No main signature found for ${this.keyPrefix}`);
     }
