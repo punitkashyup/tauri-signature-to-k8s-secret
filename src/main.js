@@ -356,30 +356,71 @@ class TauriSignatureExtractor {
   async createSecret(secretData) {
     core.info('📝 Creating new Kubernetes secret');
     
-    // Use kubectl create secret with --from-literal for each key
-    const args = [
-      'create', 'secret', 'generic', this.secretName,
-      '-n', this.namespace
-    ];
+    // For large data, use kubectl apply with YAML instead of --from-literal
+    const secretManifest = {
+      apiVersion: 'v1',
+      kind: 'Secret',
+      metadata: {
+        name: this.secretName,
+        namespace: this.namespace,
+        labels: {
+          'app.kubernetes.io/name': 'tauri-signatures',
+          'app.kubernetes.io/created-by': 'github-action'
+        }
+      },
+      type: 'Opaque',
+      data: secretData
+    };
     
-    // Add each signature as a literal
-    for (const [key, value] of Object.entries(secretData)) {
-      args.push('--from-literal');
-      args.push(`${key}=${value}`);
-    }
+    const yamlContent = this.objectToYaml(secretManifest);
     
     try {
-      execSync(`kubectl ${args.join(' ')}`, { stdio: 'pipe' });
+      // Use kubectl apply with stdin to avoid command line length limits
+      execSync('kubectl apply -f -', { 
+        input: yamlContent,
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
       core.info('✅ Created new Kubernetes secret');
     } catch (e) {
-      throw new Error(`Failed to create secret: ${e.message}`);
+      core.error(`kubectl apply failed: ${e.message}`);
+      // Fallback: try creating with individual patches
+      await this.createSecretWithPatches(secretData);
+    }
+  }
+
+  async createSecretWithPatches(secretData) {
+    core.info('📝 Creating secret with individual patches (fallback method)');
+    
+    try {
+      // Create empty secret first
+      execSync(`kubectl create secret generic "${this.secretName}" -n "${this.namespace}"`, { stdio: 'pipe' });
+      core.info('✅ Created empty secret');
+      
+      // Add data in smaller chunks
+      const entries = Object.entries(secretData);
+      const chunkSize = 5; // Process 5 entries at a time
+      
+      for (let i = 0; i < entries.length; i += chunkSize) {
+        const chunk = entries.slice(i, i + chunkSize);
+        const patchData = { data: Object.fromEntries(chunk) };
+        
+        execSync(`kubectl patch secret "${this.secretName}" -n "${this.namespace}" --type merge --patch '${JSON.stringify(patchData)}'`, {
+          stdio: 'pipe'
+        });
+        
+        core.info(`✅ Added chunk ${Math.floor(i/chunkSize) + 1}/${Math.ceil(entries.length/chunkSize)}`);
+      }
+      
+    } catch (e) {
+      throw new Error(`Failed to create secret with patches: ${e.message}`);
     }
   }
 
   async patchSecret(secretData) {
-    core.info('🔄 Patching existing Kubernetes secret');
+    core.info('🔄 Updating existing Kubernetes secret');
     
-    // Delete and recreate (simpler than complex patching)
+    // Delete and recreate for simplicity
     try {
       execSync(`kubectl delete secret "${this.secretName}" -n "${this.namespace}"`, { stdio: 'pipe' });
       core.info('🗑️ Deleted existing secret');
@@ -389,6 +430,33 @@ class TauriSignatureExtractor {
     
     // Create new secret
     await this.createSecret(secretData);
+  }
+
+  // Simple YAML generator for the secret manifest
+  objectToYaml(obj) {
+    let yaml = `apiVersion: ${obj.apiVersion}\n`;
+    yaml += `kind: ${obj.kind}\n`;
+    yaml += `metadata:\n`;
+    yaml += `  name: ${obj.metadata.name}\n`;
+    yaml += `  namespace: ${obj.metadata.namespace}\n`;
+    
+    if (obj.metadata.labels) {
+      yaml += `  labels:\n`;
+      for (const [key, value] of Object.entries(obj.metadata.labels)) {
+        yaml += `    ${key}: ${value}\n`;
+      }
+    }
+    
+    yaml += `type: ${obj.type}\n`;
+    
+    if (obj.data) {
+      yaml += `data:\n`;
+      for (const [key, value] of Object.entries(obj.data)) {
+        yaml += `  ${key}: ${value}\n`;
+      }
+    }
+    
+    return yaml;
   }
 }
 
