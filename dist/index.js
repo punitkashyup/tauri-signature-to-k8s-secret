@@ -25663,11 +25663,10 @@ class TauriSignatureExtractor {
   constructor() {
     this.bundlePath = core.getInput('tauri-bundle-path');
     this.kubeConfig = core.getInput('kubernetes-config');
-    this.namespace = core.getInput('kubernetes-namespace');
+    this.namespace = core.getInput('kubernetes-namespace') || 'default';
     this.secretName = core.getInput('secret-name');
-    this.keyPrefix = core.getInput('secret-key-prefix');
-    this.platforms = core.getInput('platforms').split(',').map(p => p.trim());
-    this.githubToken = core.getInput('github-token');
+    this.keyPrefix = core.getInput('secret-key-prefix') || 'tauri-sig';
+    this.platforms = (core.getInput('platforms') || 'windows,macos,linux').split(',').map(p => p.trim());
     
     this.signatures = {};
     this.signatureCount = 0;
@@ -25676,6 +25675,9 @@ class TauriSignatureExtractor {
   async run() {
     try {
       core.info('🔍 Starting Tauri signature extraction...');
+      const os = __nccwpck_require__(857);
+      core.info(`🖥️ Platform: ${os.platform()}`);
+      core.info(`📍 Current directory: ${process.cwd()}`);
       
       // Validate inputs
       if (!this.bundlePath) {
@@ -25730,23 +25732,30 @@ class TauriSignatureExtractor {
   async setupKubectl() {
     core.info('🔧 Setting up kubectl...');
     
-    // Get home directory - handle both Windows and Unix
-    const homeDir = process.env.HOME || process.env.USERPROFILE || process.env.HOMEPATH;
-    if (!homeDir) {
-      throw new Error('Cannot determine home directory. HOME, USERPROFILE, and HOMEPATH are all undefined.');
+    // Use os.homedir() which is more reliable across platforms
+    let homeDir;
+    try {
+      const os = __nccwpck_require__(857);
+      homeDir = os.homedir();
+      core.info(`🏠 Home directory: ${homeDir}`);
+    } catch (e) {
+      // Fallback for edge cases
+      homeDir = process.env.HOME || process.env.USERPROFILE || process.env.HOMEPATH || '/tmp';
+      core.warning(`Using fallback home directory: ${homeDir}`);
     }
     
-    core.debug(`Home directory: ${homeDir}`);
+    if (!homeDir || typeof homeDir !== 'string') {
+      throw new Error('Cannot determine home directory');
+    }
     
     // Write kubeconfig to file
     const kubeconfigPath = path.join(homeDir, '.kube', 'config');
     const kubeconfigDir = path.dirname(kubeconfigPath);
     
-    core.debug(`Kubeconfig path: ${kubeconfigPath}`);
-    core.debug(`Kubeconfig directory: ${kubeconfigDir}`);
+    core.info(`📝 Kubeconfig path: ${kubeconfigPath}`);
     
     if (!fs.existsSync(kubeconfigDir)) {
-      core.debug('Creating .kube directory...');
+      core.info('📁 Creating .kube directory...');
       fs.mkdirSync(kubeconfigDir, { recursive: true });
     }
     
@@ -25759,18 +25768,20 @@ class TauriSignatureExtractor {
       throw new Error('kubernetes-config input is empty');
     }
     
-    // Write the kubeconfig directly (no base64 decoding needed)
-    core.debug('Writing kubeconfig file...');
+    // Write the kubeconfig
     fs.writeFileSync(kubeconfigPath, this.kubeConfig);
     
-    // Set file permissions (Unix-like systems)
+    // Set file permissions (Unix-like systems only)
     if (process.platform !== 'win32') {
-      fs.chmodSync(kubeconfigPath, 0o600);
+      try {
+        fs.chmodSync(kubeconfigPath, 0o600);
+      } catch (e) {
+        core.warning(`Could not set kubeconfig permissions: ${e.message}`);
+      }
     }
     
     // Test kubectl connection
     try {
-      core.debug('Testing kubectl connection...');
       execSync('kubectl version --client', { stdio: 'pipe' });
       core.info('✅ kubectl configured successfully');
     } catch (error) {
