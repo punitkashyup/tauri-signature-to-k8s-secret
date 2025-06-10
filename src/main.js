@@ -61,8 +61,8 @@ class TauriSignatureExtractor {
       fs.mkdirSync(kubeconfigDir, { recursive: true });
     }
     
-    const decodedConfig = Buffer.from(this.kubeConfig, 'base64').toString('utf8');
-    fs.writeFileSync(kubeconfigPath, decodedConfig);
+    // Write the kubeconfig directly (no base64 decoding needed)
+    fs.writeFileSync(kubeconfigPath, this.kubeConfig);
     
     // Test kubectl connection
     try {

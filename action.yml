@@ -12,7 +12,7 @@ inputs:
     default: 'src-tauri/target/release/bundle'
   
   kubernetes-config:
-    description: 'Base64 encoded kubeconfig content'
+    description: 'Complete kubeconfig content (YAML format)'
     required: true
   
   kubernetes-namespace:

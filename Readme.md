@@ -23,7 +23,7 @@ A GitHub Action that extracts Tauri build signatures and stores them securely in
   uses: yourusername/tauri-signature-to-k8s-secret@v1
   with:
     tauri-bundle-path: 'src-tauri/target/release/bundle'
-    kubernetes-config: ${{ secrets.KUBE_CONFIG_BASE64 }}
+    kubernetes-config: ${{ secrets.KUBE_CONFIG }}
     kubernetes-namespace: 'default'
     secret-name: 'tauri-signatures'
     secret-key-prefix: 'app-sig'
@@ -36,7 +36,7 @@ A GitHub Action that extracts Tauri build signatures and stores them securely in
 | Input | Description | Required | Default |
 |-------|-------------|----------|---------|
 | `tauri-bundle-path` | Path to Tauri bundle directory | ✅ | `src-tauri/target/release/bundle` |
-| `kubernetes-config` | Base64 encoded kubeconfig content | ✅ | - |
+| `kubernetes-config` | Complete kubeconfig content (YAML format) | ✅ | - |
 | `kubernetes-namespace` | Kubernetes namespace for the secret | ❌ | `default` |
 | `secret-name` | Name of the Kubernetes secret | ✅ | - |
 | `secret-key-prefix` | Prefix for secret keys | ❌ | `tauri-sig` |
@@ -89,8 +89,17 @@ Each signature entry contains:
 
 Add these secrets to your GitHub repository:
 
-- `KUBE_CONFIG_BASE64`: Base64 encoded kubeconfig file
+- `KUBE_CONFIG`: Complete kubeconfig file content (YAML format)
 - `GITHUB_TOKEN`: GitHub token (usually automatic)
+
+## 📋 Setting up GitHub Secrets
+
+```bash
+# Copy your kubeconfig content directly (no encoding needed)
+cat ~/.kube/config
+
+# Then paste the entire content into GitHub Secrets as KUBE_CONFIG
+```
 
 ## 🛠️ Complete Workflow Example
 
@@ -131,7 +140,7 @@ jobs:
         uses: yourusername/tauri-signature-to-k8s-secret@v1
         with:
           tauri-bundle-path: 'src-tauri/target/release/bundle'
-          kubernetes-config: ${{ secrets.KUBE_CONFIG_BASE64 }}
+          kubernetes-config: ${{ secrets.KUBE_CONFIG }}
           kubernetes-namespace: 'production'
           secret-name: 'app-signatures'
           platforms: ${{ matrix.os == 'windows-latest' && 'windows' || matrix.os == 'macos-latest' && 'macos' || 'linux' }}
