@@ -145,65 +145,43 @@ class TauriSignatureExtractor {
   async extractSignatures() {
     core.info('📂 Extracting Tauri signatures...');
     
-    // Validate bundle path
+    // Validate and resolve bundle path
     if (!this.bundlePath || typeof this.bundlePath !== 'string') {
       throw new Error(`Invalid bundle path: ${this.bundlePath}`);
     }
     
     const absoluteBundlePath = path.resolve(this.bundlePath);
     core.info(`🔍 Bundle path: ${absoluteBundlePath}`);
-    core.info(`📍 Current working directory: ${process.cwd()}`);
     
     if (!fs.existsSync(absoluteBundlePath)) {
       core.error(`❌ Bundle path does not exist: ${absoluteBundlePath}`);
       
-      // Try to find Tauri directories for debugging
+      // Debug information
       try {
         const currentDir = process.cwd();
         core.info(`📂 Contents of current directory (${currentDir}):`);
         const files = fs.readdirSync(currentDir);
         files.slice(0, 10).forEach(file => {
           const fullPath = path.join(currentDir, file);
-          const isDir = fs.statSync(fullPath).isDirectory();
+          const isDir = fs.lstatSync(fullPath).isDirectory();
           core.info(`  ${isDir ? '📁' : '📄'} ${file}`);
         });
         
-        // Look for any tauri-related directories
-        const findTauriDirs = (dir, maxDepth = 2) => {
-          if (maxDepth <= 0) return [];
-          try {
-            const items = fs.readdirSync(dir);
-            let tauriDirs = [];
-            for (const item of items) {
-              if (item.includes('tauri') || item.includes('target')) {
-                const fullPath = path.join(dir, item);
-                if (fs.statSync(fullPath).isDirectory()) {
-                  tauriDirs.push(fullPath);
-                  // Look one level deeper
-                  tauriDirs = tauriDirs.concat(findTauriDirs(fullPath, maxDepth - 1));
-                }
-              }
-            }
-            return tauriDirs;
-          } catch (e) {
-            return [];
-          }
-        };
-        
-        const tauriDirs = findTauriDirs(currentDir);
+        // Look for tauri directories
+        const tauriDirs = files.filter(file => 
+          file.includes('tauri') || file.includes('target') || file.includes('apps')
+        );
         if (tauriDirs.length > 0) {
-          core.info('🔍 Found Tauri-related directories:');
-          tauriDirs.slice(0, 5).forEach(dir => core.info(`  📁 ${dir}`));
+          core.info('🔍 Found potential Tauri directories:');
+          tauriDirs.forEach(dir => core.info(`  📁 ${dir}`));
         }
-        
       } catch (debugError) {
-        core.warning(`Debug directory listing failed: ${debugError.message}`);
+        core.warning(`Debug listing failed: ${debugError.message}`);
       }
       
       throw new Error(`Bundle directory not found: ${absoluteBundlePath}`);
     }
     
-    // Update bundle path to absolute path
     this.bundlePath = absoluteBundlePath;
     
     for (const platform of this.platforms) {
@@ -222,42 +200,31 @@ class TauriSignatureExtractor {
       }
     }
     
-    core.info(`📊 Found ${this.signatureCount} signature files across ${Object.keys(this.signatures).length} platforms`);
+    core.info(`📊 Total: ${this.signatureCount} signature files across ${Object.keys(this.signatures).length} platforms`);
     
     if (this.signatureCount === 0) {
-      // Try to find .sig files anywhere in the bundle path
       core.info('🔍 Searching for .sig files recursively...');
-      try {
-        const findSigFiles = (dir, maxDepth = 3) => {
-          if (maxDepth <= 0) return [];
-          try {
-            const items = fs.readdirSync(dir);
-            let sigFiles = [];
-            for (const item of items) {
-              const fullPath = path.join(dir, item);
-              const stat = fs.statSync(fullPath);
-              if (stat.isFile() && item.endsWith('.sig')) {
-                sigFiles.push(fullPath);
-              } else if (stat.isDirectory()) {
-                sigFiles = sigFiles.concat(findSigFiles(fullPath, maxDepth - 1));
-              }
-            }
-            return sigFiles;
-          } catch (e) {
-            return [];
-          }
-        };
+      this.findAllSigFiles(this.bundlePath);
+    }
+  }
+
+  findAllSigFiles(dir, maxDepth = 3) {
+    if (maxDepth <= 0) return;
+    
+    try {
+      const items = fs.readdirSync(dir);
+      for (const item of items) {
+        const fullPath = path.join(dir, item);
+        const stat = fs.lstatSync(fullPath);
         
-        const allSigFiles = findSigFiles(this.bundlePath);
-        if (allSigFiles.length > 0) {
-          core.info('📝 Found .sig files at:');
-          allSigFiles.slice(0, 10).forEach(file => core.info(`  📄 ${file}`));
-        } else {
-          core.info('ℹ️ No .sig files found in bundle directory');
+        if (stat.isFile() && item.endsWith('.sig')) {
+          core.info(`📝 Found .sig file: ${fullPath}`);
+        } else if (stat.isDirectory()) {
+          this.findAllSigFiles(fullPath, maxDepth - 1);
         }
-      } catch (searchError) {
-        core.warning(`Error searching for .sig files: ${searchError.message}`);
       }
+    } catch (e) {
+      core.debug(`Cannot read directory ${dir}: ${e.message}`);
     }
   }
 
@@ -267,31 +234,25 @@ class TauriSignatureExtractor {
     for (const bundleType of PLATFORM_PATHS[platform]) {
       const bundleDir = path.join(this.bundlePath, bundleType);
       
-      core.debug(`Checking bundle directory: ${bundleDir}`);
+      core.info(`📁 Checking: ${bundleDir}`);
       
       if (!fs.existsSync(bundleDir)) {
-        core.debug(`Bundle directory not found: ${bundleDir}`);
+        core.info(`📁 Not found: ${bundleDir}`);
         continue;
       }
       
       try {
         const files = fs.readdirSync(bundleDir);
-        core.debug(`Files in ${bundleDir}: ${files.join(', ')}`);
+        core.info(`📄 Files in ${bundleType}: ${files.join(', ')}`);
         
         const sigFiles = files.filter(file => file.endsWith('.sig'));
-        core.debug(`Signature files found: ${sigFiles.join(', ')}`);
+        core.info(`🔐 Signature files: ${sigFiles.join(', ')}`);
         
         for (const sigFile of sigFiles) {
           const sigPath = path.join(bundleDir, sigFile);
           
-          // Validate file path
-          if (!sigPath || typeof sigPath !== 'string') {
-            core.warning(`Invalid signature file path: ${sigPath}`);
-            continue;
-          }
-          
           if (!fs.existsSync(sigPath)) {
-            core.warning(`Signature file does not exist: ${sigPath}`);
+            core.warning(`⚠️ Signature file missing: ${sigPath}`);
             continue;
           }
           
@@ -299,18 +260,15 @@ class TauriSignatureExtractor {
             const sigContent = fs.readFileSync(sigPath, 'utf8').trim();
             
             if (!sigContent) {
-              core.warning(`Empty signature file: ${sigPath}`);
+              core.warning(`⚠️ Empty signature file: ${sigPath}`);
               continue;
             }
             
-            // Generate a hash of the signature for verification
             const sigHash = crypto.createHash('sha256').update(sigContent).digest('hex');
-            
-            // Sanitize filename for use as key
             const filename = path.basename(sigFile, '.sig').replace(/[^a-zA-Z0-9._-]/g, '_');
             
             if (!filename) {
-              core.warning(`Invalid filename after sanitization: ${sigFile}`);
+              core.warning(`⚠️ Invalid filename: ${sigFile}`);
               continue;
             }
             
@@ -324,10 +282,10 @@ class TauriSignatureExtractor {
             };
             
             this.signatureCount++;
-            core.info(`✅ Extracted signature: ${platform}/${key}`);
+            core.info(`✅ Extracted: ${platform}/${key}`);
             
           } catch (fileError) {
-            core.warning(`Error reading signature file ${sigPath}: ${fileError.message}`);
+            core.warning(`⚠️ Error reading ${sigPath}: ${fileError.message}`);
           }
         }
       } catch (error) {
@@ -342,10 +300,7 @@ class TauriSignatureExtractor {
     core.info('🔐 Updating Kubernetes secret...');
     
     try {
-      // Check if secret exists
       const secretExists = await this.checkSecretExists();
-      
-      // Prepare secret data
       const secretData = this.prepareSecretData();
       
       if (secretExists) {
@@ -355,7 +310,6 @@ class TauriSignatureExtractor {
       }
       
       core.info('✅ Kubernetes secret updated successfully');
-      
     } catch (error) {
       throw new Error(`Failed to update Kubernetes secret: ${error.message}`);
     }
@@ -373,7 +327,6 @@ class TauriSignatureExtractor {
   prepareSecretData() {
     const data = {};
     
-    // Add metadata
     const metadata = {
       platforms: Object.keys(this.signatures),
       totalSignatures: this.signatureCount,
@@ -385,21 +338,14 @@ class TauriSignatureExtractor {
     
     data[`${this.keyPrefix}-metadata`] = Buffer.from(JSON.stringify(metadata)).toString('base64');
     
-    // Add signature data
     for (const [platform, platformSigs] of Object.entries(this.signatures)) {
       for (const [key, sigData] of Object.entries(platformSigs)) {
-        const secretKey = `${this.keyPrefix}-${platform}-${key}`;
-        
-        // Validate the key doesn't contain invalid characters
-        const validKey = secretKey.replace(/[^a-zA-Z0-9._-]/g, '-');
-        if (validKey !== secretKey) {
-          core.warning(`Secret key sanitized: ${secretKey} -> ${validKey}`);
-        }
+        const secretKey = `${this.keyPrefix}-${platform}-${key}`.replace(/[^a-zA-Z0-9._-]/g, '-');
         
         try {
-          data[validKey] = Buffer.from(JSON.stringify(sigData)).toString('base64');
+          data[secretKey] = Buffer.from(JSON.stringify(sigData)).toString('base64');
         } catch (encodeError) {
-          core.error(`Failed to encode signature data for key ${validKey}: ${encodeError.message}`);
+          core.error(`Failed to encode signature data for key ${secretKey}: ${encodeError.message}`);
         }
       }
     }
@@ -408,36 +354,41 @@ class TauriSignatureExtractor {
   }
 
   async createSecret(secretData) {
-    const secretManifest = {
-      apiVersion: 'v1',
-      kind: 'Secret',
-      metadata: {
-        name: this.secretName,
-        namespace: this.namespace,
-        labels: {
-          'app.kubernetes.io/name': 'tauri-signatures',
-          'app.kubernetes.io/created-by': 'github-action'
-        }
-      },
-      type: 'Opaque',
-      data: secretData
-    };
+    core.info('📝 Creating new Kubernetes secret');
     
-    const manifestPath = '/tmp/secret-manifest.yaml';
-    fs.writeFileSync(manifestPath, JSON.stringify(secretManifest));
+    // Use kubectl create secret with --from-literal for each key
+    const args = [
+      'create', 'secret', 'generic', this.secretName,
+      '-n', this.namespace
+    ];
     
-    execSync(`kubectl apply -f ${manifestPath}`, { stdio: 'pipe' });
-    core.info('📝 Created new Kubernetes secret');
+    // Add each signature as a literal
+    for (const [key, value] of Object.entries(secretData)) {
+      args.push('--from-literal');
+      args.push(`${key}=${value}`);
+    }
+    
+    try {
+      execSync(`kubectl ${args.join(' ')}`, { stdio: 'pipe' });
+      core.info('✅ Created new Kubernetes secret');
+    } catch (e) {
+      throw new Error(`Failed to create secret: ${e.message}`);
+    }
   }
 
   async patchSecret(secretData) {
-    // Create patch data
-    const patchData = { data: secretData };
-    const patchPath = '/tmp/secret-patch.json';
-    fs.writeFileSync(patchPath, JSON.stringify(patchData));
+    core.info('🔄 Patching existing Kubernetes secret');
     
-    execSync(`kubectl patch secret ${this.secretName} -n ${this.namespace} --patch-file ${patchPath}`, { stdio: 'pipe' });
-    core.info('🔄 Patched existing Kubernetes secret');
+    // Delete and recreate (simpler than complex patching)
+    try {
+      execSync(`kubectl delete secret "${this.secretName}" -n "${this.namespace}"`, { stdio: 'pipe' });
+      core.info('🗑️ Deleted existing secret');
+    } catch (e) {
+      core.warning(`Could not delete existing secret: ${e.message}`);
+    }
+    
+    // Create new secret
+    await this.createSecret(secretData);
   }
 }
 
