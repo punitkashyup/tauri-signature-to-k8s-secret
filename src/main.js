@@ -132,10 +132,10 @@ class TauriSignatureExtractor {
       }
     }
     
-    // Test kubectl connection
+    // Test kubectl is available (don't check version to avoid compatibility issues)
     try {
-      const clientVersion = execSync('kubectl version --client --short', { encoding: 'utf8', stdio: 'pipe' });
-      core.info(`✅ kubectl client: ${clientVersion.trim()}`);
+      execSync('kubectl --help', { stdio: 'pipe' });
+      core.info(`✅ kubectl configured successfully`);
     } catch (error) {
       core.error(`kubectl setup failed: ${error.message}`);
       throw new Error(`Failed to configure kubectl: ${error.message}`);
